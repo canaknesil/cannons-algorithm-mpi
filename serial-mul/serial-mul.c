@@ -25,6 +25,9 @@ int COL1 = 3;
 int ROW2 = 3;
 int COL2 = 3;
 
+int print_matrices = 0;
+int output_for_octave = 0;
+
 
 int main(int argc, char *argv[]) {
 
@@ -53,11 +56,17 @@ int main(int argc, char *argv[]) {
 
 	//getting arguments
 	int c;
-	while ((c = getopt(argc, argv, "s:")) != -1) {
+	while ((c = getopt(argc, argv, "s:po")) != -1) {
 
 		switch (c) {
 			case 's': 
 				ROW1 = ROW2 = COL1 = COL2 = atoi(optarg);
+				break;
+			case 'p':
+				print_matrices = 1;
+				break;
+			case 'o': 
+				output_for_octave = 1;
 				break;
 			default:
 				if (world_rank == master_rank) printf("Illegal arguments. Quitting...\n");
@@ -89,14 +98,7 @@ int main(int argc, char *argv[]) {
 		float *vector_a;
 		float *vector_b = malloc(COL1 * sizeof(float));
 
-		MPI_Status *statSend = malloc(total_job * sizeof(MPI_Status));
-		MPI_Status *statRecv = malloc(total_job * sizeof(MPI_Status));
-
-		MPI_Request *reqSend_1 = malloc(total_job * sizeof(MPI_Request));
-		MPI_Request *reqSend_2 = malloc(total_job * sizeof(MPI_Request));
-		MPI_Request *reqRecv = malloc(total_job * sizeof(MPI_Request));
-
-
+		
 		//create matrices
 		Matrix *a = matrix_create(ROW1, COL1);
 		Matrix *b = matrix_create(ROW2, COL2);
@@ -106,16 +108,19 @@ int main(int argc, char *argv[]) {
 		create_random_matrix(b);
 		
 		//print matrices
-		/*printf("Matrix A:\n");
-		matrix_print(a);
+		if (print_matrices) {
+			printf("Matrix A:\n");
+			matrix_print(a);
 
-		printf("Matrix B:\n");
-		matrix_print(b);*/
+			printf("Matrix B:\n");
+			matrix_print(b);
+		}
+		
 
 		begin = MPI_Wtime();
 
 		//send
-		printf("Sending...\n");
+		if (!output_for_octave) printf("Sending...\n");
 		int count = 0;
 		for (j=0; j<COL2; j++) {
 
@@ -131,44 +136,48 @@ int main(int argc, char *argv[]) {
 				int job_count = COL2 * i + j;
 				int destination = (job_count) % n_worker;
 
-				MPI_Isend((void *)vector_a, COL1, MPI_FLOAT, destination, 0, MPI_COMM_WORLD, &reqSend_1																																																																																																																																																																																																																																																									[job_count]);
-				MPI_Isend((void *)vector_b, COL1, MPI_FLOAT, destination, 0, MPI_COMM_WORLD, &reqSend_2[job_count]);
+				MPI_Send((void *)vector_a, COL1, MPI_FLOAT, destination, 0, MPI_COMM_WORLD);
+				MPI_Send((void *)vector_b, COL1, MPI_FLOAT, destination, 0, MPI_COMM_WORLD);
 
 				count++;
-				printf("\r%.0f %%", (float) count / total_job * 100);
+				if (!output_for_octave)
+					printf("\r%.0f %%", (float) count / total_job * 100);
 
 			}
 
 		}
-		printf("\n");
+		if (!output_for_octave) printf("\n");
 
 
 
 		//recieve
-		printf("Recieving...\n");
+		if (!output_for_octave) printf("Recieving...\n");
 		for (i=0; i<total_job; i++) {
 
 			
-			MPI_Irecv(&result, 1, MPI_FLOAT, i % n_worker, 0, MPI_COMM_WORLD, &reqRecv[i]);
-			MPI_Wait(&reqRecv[i], &statRecv[i]);
+			MPI_Recv(&result, 1, MPI_FLOAT, i % n_worker, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 			c->values[i/COL2][i%COL2] = result;
 
-			printf("\r%.0f %%", (float) i / total_job * 100);
+			if (!output_for_octave) printf("\r%.0f %%", (float) i / total_job * 100);
 
 		}
-		printf("\n");
+		if (!output_for_octave) printf("\n");
 
 
 
 		end = MPI_Wtime();
 		time_spent = end - begin;
 
-		printf("Turnaround time: %f\n", time_spent);
+		if (!output_for_octave) printf("Turnaround time: ");
+		printf("%f\n", time_spent);
 
 
 		//print result
-		/*printf("Matrix C:\n");
-		matrix_print(c);*/
+		if (print_matrices) {
+			printf("Matrix C:\n");
+			matrix_print(c);
+		}
+		
 
 
 		//free allocated spaces
@@ -177,12 +186,6 @@ int main(int argc, char *argv[]) {
 		matrix_destroy(c);
 
 		free(vector_b);
-
-		free(statSend);
-		free(statRecv);
-		free(reqSend_1);
-		free(reqSend_2);
-		free(reqRecv);
 
 
 	}
@@ -193,11 +196,7 @@ int main(int argc, char *argv[]) {
 		float *vector_a = malloc(COL1 * sizeof(float));
 		float *vector_b = malloc(COL1 * sizeof(float));
 
-		MPI_Status statRecv[2];
-
-		MPI_Request reqSend;
-		MPI_Request reqRecv[2];
-
+		
 
 		int n_job = total_job / n_worker;
 		if (world_rank < extra) n_job++;
@@ -207,18 +206,15 @@ int main(int argc, char *argv[]) {
 
 
 			//receive vectors
-			MPI_Irecv(vector_a, COL1, MPI_FLOAT, master_rank, 0, MPI_COMM_WORLD, &reqRecv[0]);
-			MPI_Wait(&reqRecv[0], &statRecv[0]);
-
-			MPI_Irecv(vector_b, COL1, MPI_FLOAT, master_rank, 0, MPI_COMM_WORLD, &reqRecv[1]);
-			MPI_Wait(&reqRecv[1], &statRecv[1]);
+			MPI_Recv(vector_a, COL1, MPI_FLOAT, master_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+			MPI_Recv(vector_b, COL1, MPI_FLOAT, master_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
 			
 			//calculate point
 			result = calculate_point(vector_a, vector_b);
 
 			//send result
-			MPI_Isend(&result, 1, MPI_FLOAT, master_rank, 0, MPI_COMM_WORLD, &reqSend);
+			MPI_Send(&result, 1, MPI_FLOAT, master_rank, 0, MPI_COMM_WORLD);
 
 
 		}
