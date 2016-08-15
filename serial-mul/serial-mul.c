@@ -41,8 +41,8 @@ int main(int argc, char *argv[]) {
 	MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
 
 
-
-	int master_rank = world_size - 1;
+	int master_rank = 0;
+	
 
 	//checking number of process
 	if (world_size < 2) {
@@ -79,11 +79,17 @@ int main(int argc, char *argv[]) {
 
 
 
-	int i, j;
+	
+	
+	float *vector_a;
+	float *vector_b;
 	float result;
-	int n_worker = world_size - 1;
+
+	int n_worker = world_size;
 	int total_job = ROW1 * COL2;
-	int extra = total_job % n_worker;
+	int extra_job = total_job % n_worker;
+	int n_round = total_job / n_worker;
+	
 
 	srand(time(NULL));
 
@@ -95,8 +101,8 @@ int main(int argc, char *argv[]) {
 		double end;
 		double time_spent;
 
-		float *vector_a;
-		float *vector_b = malloc(COL1 * sizeof(float));
+
+		vector_b = malloc(COL1 * sizeof(float));
 
 		
 		//create matrices
@@ -119,49 +125,149 @@ int main(int argc, char *argv[]) {
 
 		begin = MPI_Wtime();
 
-		//send
-		if (!output_for_octave) printf("Sending...\n");
-		int count = 0;
-		for (j=0; j<COL2; j++) {
 
-			int k;
-			for (k=0; k<ROW2; k++) {
-				vector_b[k] = b->values[k][j];
+
+
+		//calculate
+		if (!output_for_octave) printf("Calculating...\n");
+
+
+		float *my_vector_a;
+		float *my_vector_b = malloc(COL1 * sizeof(float));
+
+		int round;
+		for (round=0; round<n_round; round++) {
+
+			//EXECUTE ROUND
+
+			int my_row;
+			int my_col;
+
+			//send
+			int proc;
+			int col_prev = -1;
+			for (proc=0; proc<world_size; proc++) {
+
+
+				int job_count = world_size * round + proc;
+				int row = job_count % COL2;
+				int col = job_count / COL2; //they are inverse in purpose
+
+
+				if (proc == 0) {
+					my_row = row;
+					my_col = col;
+				}
+
+
+				//assign vectors
+				if (col_prev != col) {
+
+					int i;
+					for (i=0; i<ROW2; i++) {
+						if (proc == 0) my_vector_b[i] = b->values[i][col];
+						vector_b[i] = b->values[i][col];
+					}
+
+				}
+				col_prev = col;
+
+				if (proc == 0) my_vector_a = &a->values[row][0];
+				else vector_a = &a->values[row][0];
+
+				
+
+				//send to workers
+				if (proc != 0) {
+
+					MPI_Send((void *)vector_a, COL1, MPI_FLOAT, proc, 0, MPI_COMM_WORLD);
+					MPI_Send((void *)vector_b, COL1, MPI_FLOAT, proc, 0, MPI_COMM_WORLD);
+
+				}
+
 			}
 
-			for (i=0; i<ROW1; i++) {
 
 
-				vector_a = &a->values[i][0];
-				int job_count = COL2 * i + j;
-				int destination = (job_count) % n_worker;
+			//calculate own job
+			float my_result = calculate_point(my_vector_a, my_vector_b);
+			c->values[my_row][my_col] = my_result;
 
-				MPI_Send((void *)vector_a, COL1, MPI_FLOAT, destination, 0, MPI_COMM_WORLD);
-				MPI_Send((void *)vector_b, COL1, MPI_FLOAT, destination, 0, MPI_COMM_WORLD);
-
-				count++;
-				if (!output_for_octave)
-					printf("\r%.0f %%", (float) count / total_job * 100);
-
-			}
-
-		}
-		if (!output_for_octave) printf("\n");
-
-
-
-		//recieve
-		if (!output_for_octave) printf("Recieving...\n");
-		for (i=0; i<total_job; i++) {
-
+			if (!output_for_octave) printf("\r%.0f %%", (float) (round * world_size) / total_job * 100);
 			
-			MPI_Recv(&result, 1, MPI_FLOAT, i % n_worker, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-			c->values[i/COL2][i%COL2] = result;
 
-			if (!output_for_octave) printf("\r%.0f %%", (float) i / total_job * 100);
+			//recieve
+			for (proc=1; proc<world_size; proc++) {
+
+				int job_count = world_size * round + proc;
+				int row = job_count % COL2;
+				int col = job_count / COL2;
+
+				MPI_Recv(&result, 1, MPI_FLOAT, proc, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+				c->values[row][col] = result;
+
+				if (!output_for_octave) printf("\r%.0f %%", (float) job_count / total_job * 100);
+
+			}
+
 
 		}
+
+		//execute extra
+		int i;
+		int col_prev = -1;
+		for (i=0; i<extra_job; i++) {
+
+			int proc = i + 1;
+
+			int job_count = world_size * n_round + i;
+			int row = job_count % COL2;
+			int col = job_count / COL2; //they are inverse in purpose
+
+
+			//assign vectors
+			if (col_prev != col) {
+
+				int i;
+				for (i=0; i<ROW2; i++) {
+					vector_b[i] = b->values[i][col];
+				}
+
+			}
+			col_prev = col;
+
+			vector_a = &a->values[row][0];
+			
+
+			//send to workers
+			MPI_Send((void *)vector_a, COL1, MPI_FLOAT, proc, 0, MPI_COMM_WORLD);
+			MPI_Send((void *)vector_b, COL1, MPI_FLOAT, proc, 0, MPI_COMM_WORLD);
+
+		}
+
+		
+		for (i=0; i<extra_job; i++) {
+
+			int proc = i + 1;
+
+			int job_count = world_size * n_round + i;
+			int row = job_count % COL2;
+			int col = job_count / COL2; //they are inverse in purpose
+
+
+			//revieve
+			MPI_Recv(&result, 1, MPI_FLOAT, proc, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+			c->values[row][col] = result;
+
+			if (!output_for_octave) printf("\r%.0f %%", (float) job_count / total_job * 100);
+
+		}
+
 		if (!output_for_octave) printf("\n");
+
+
+
+
 
 
 
@@ -186,6 +292,7 @@ int main(int argc, char *argv[]) {
 		matrix_destroy(c);
 
 		free(vector_b);
+		free(my_vector_b);
 
 
 	}
@@ -199,9 +306,9 @@ int main(int argc, char *argv[]) {
 		
 
 		int n_job = total_job / n_worker;
-		if (world_rank < extra) n_job++;
+		if (world_rank-1 < extra_job) n_job++;
 
-		
+		int i;
 		for (i=0; i<n_job; i++) {
 
 
