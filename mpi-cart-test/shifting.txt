@@ -1,0 +1,11 @@
+ABC
+DEF
+GHI
+
+GHI dir=0
+ABC
+DEF
+
+CAB dir=1
+FDE
+IGH
